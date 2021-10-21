@@ -8,11 +8,17 @@
     "puppeteer": "^8.0.0",
     "ts-node": "^10.3.0"
   },
-  "scripts": {
-    "build-book": "ts-node src/main.ts"
-  },
   "devDependencies": {
+    "@types/jest": "^27.0.2",
     "@types/node": "^16.10.3",
+    "jest": "^27.3.1",
+    "ts-jest": "^27.0.7",
     "typescript": "^4.4.3"
+  },
+  "scripts": {
+    "test": "jest",
+    "build-book": "ts-node src/main.ts",
+    "build-haskell": "ts-node src/main.ts learnYouAHaskell",
+    "build-saiocp": "ts-node src/main.ts saiocp"
   }
 }
