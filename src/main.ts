@@ -1,8 +1,12 @@
 import PDFMerger from "pdf-merger-js";
 import puppeteer from "puppeteer";
-import Maybe from "./ADTs/Maybe";
-import Task from "./ADTs/Task";
+import { reduce as aReduce } from "fp-ts/lib/Array";
+import { TaskResult } from "./wrappers/TaskResult";
+import { IO } from "./wrappers/IO";
+import { Maybe } from "./wrappers/Maybe";
+import { Result } from "./wrappers/Result";
 import { BookData, BookOptions, bookOptions } from "./bookOptions";
+import { pipe } from "fp-ts/lib/function";
 
 type AppState = {
   browser: puppeteer.Browser;
@@ -12,173 +16,251 @@ type AppState = {
   nextPageButton: Maybe<puppeteer.ElementHandle<Element>>;
 };
 
-const timestamp = (): Task<string> =>
-  Task.encaseIO(() => new Date())
-    .map(x => x.toISOString())
-    .map(x => x.replace("T", " "))
-    .map(x => x.slice(10, 19));
+/** `timestamp :: () -> IO String` */
+const timestamp = (): IO<string> =>
+  pipe(
+    IO.of(new Date()),
+    IO.map(x => x.toISOString()),
+    IO.map(x => x.replace("T", " ")),
+    IO.map(x => x.slice(10, 19)),
+  );
 
-const logProgress = (logString: string) => <T>(passThrough: T): Task<T> =>
-  timestamp()
-    .chain(date =>
-      Task.encaseIO(() => console.log(`${date} - ${logString}`))
-        .map(_x => passThrough)
-    );
+/** `logProgress :: String -> a -> Task (Either Error a)` */
+const logProgress = (logString: string) => <T>(passThrough: T): T =>
+  pipe(
+    timestamp(),
+    IO.map(date => {console.log(`${date} - ${logString}`)}),
+    _x => passThrough,
+  );
 
+/** `createAppState :: String -> Browser -> Page -> Task (Either Error AppState)` */
 const createAppState =
   (bookToBuild: string) =>
   (browser: puppeteer.Browser) =>
-  (page: puppeteer.Page): Task<AppState> =>
-    Task.tryCatch(() => {
-      if (Object.keys(bookOptions).includes(bookToBuild)) {
-        return bookToBuild as keyof BookOptions
-      }
-      throw ("Unknown book to build");
-    })
-      .map(bookOptionKey => ({
+  (page: puppeteer.Page): TaskResult<AppState> =>
+    pipe(
+      TaskResult.tryCatch(async () => {
+          if (Object.keys(bookOptions).includes(bookToBuild)) {
+            return bookToBuild as keyof BookOptions
+          }
+          throw new Error("Unknown book to build");
+        },
+      ),
+      TaskResult.map(bookOptionKey => ({
         browser,
         page,
         pdfMerger: new PDFMerger(),
         bookOptions: bookOptions[bookOptionKey],
-        nextPageButton: Maybe.nothing(),
-      }));
-
-const createBrowser = (): Task<puppeteer.Browser> =>
-  Task.fromPromise(() => puppeteer.launch());
-
-const createPage = (browser: puppeteer.Browser): Task<puppeteer.Page> =>
-  Task.fromPromise(() => browser.newPage());
-
-const goToSite = (state: AppState): Task<AppState> =>
-  Task.fromPromise(() => state.page.goto(state.bookOptions.startPage))
-    .map(_x => state);
-
-const createPdf = (state: AppState): Task<AppState> =>
-  Task.fromPromise(() => state.page.pdf({
-    format: "a4",
-    path: `output/temp/temp.pdf`,
-    margin: {
-      left: "19mm",
-      right: "19mm",
-      top: "20mm",
-      bottom: "20mm",
-    }
-  }))
-    .map(_x => state);
-
-const closeBrowser = (state: AppState): Task<void> =>
-  Task.fromPromise(() => state.browser.close());
-
-const mergeFile = (state: AppState): Task<AppState> =>
-  Task.tryCatch(() => state.pdfMerger.add("output/temp/temp.pdf"))
-    .map(_x => state);
-
-const saveMergedFile = (state: AppState): Task<AppState> =>
-  Task.fromPromise(() => state.pdfMerger.save(`output/books/${state.bookOptions.outputFilename}`))
-    .map(_x => state);
-
-function clickButton(state: AppState): Task<AppState> {
-  return state.nextPageButton
-    .fold(
-      () => Task.resolve(state).chain(logProgress("No further next button found")),
-      button =>
-        Task.fromPromise(() => Promise.all([button.click(), state.page.waitForNavigation()]))
-          .chain(_x => buildPagePdf(state))
+        nextPageButton: Maybe.nothing,
+      }))
     );
-}
 
-const hideElements = (elements: puppeteer.ElementHandle<Element>[]): Task<void> =>
-  elements.reduce<Task<void>>(
-    (accum, x) =>
-      accum
-        .chain(_x => Task.fromPromise(
-          () => x.evaluate(el => {
-            el.style.display = "none";
-          })
-        )),
-    Task.resolve(undefined)
+/** `createBrowser :: Task (Either Error Browser)` */
+const createBrowser: TaskResult<puppeteer.Browser> =
+  TaskResult.tryCatch(() => puppeteer.launch());
+
+/** `createPage :: Browser -> Task (Either Error Page)` */
+const createPage = (browser: puppeteer.Browser): TaskResult<puppeteer.Page> =>
+  TaskResult.tryCatch(() => browser.newPage());
+
+/** `goToSite :: AppState -> Task (Either Error AppState)` */
+const goToSite = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    TaskResult.tryCatch(
+      () => state.page.goto(state.bookOptions.startPage),
+    ),
+    TaskResult.map(_x => state)
   );
 
-const showElements = (elements: puppeteer.ElementHandle<Element>[]): Task<void> =>
-  elements.reduce<Task<void>>(
-    (accum, x) =>
-      accum
-        .chain(_x => Task.fromPromise(
-          () => x.evaluate(el => {
-            el.style.display = "block";
-          })
-        )),
-    Task.resolve(undefined)
+/** `createPdf :: AppState -> Task (Either Error AppState)` */
+const createPdf = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    TaskResult.tryCatch(
+      () => state.page.pdf({
+        format: "a4",
+        path: `output/temp/temp.pdf`,
+        margin: {
+          left: "19mm",
+          right: "19mm",
+          top: "20mm",
+          bottom: "20mm",
+        }
+      }),
+    ),
+    TaskResult.map(_x => state)
   );
 
-const findElements = (selector: string) => (state: AppState): Task<puppeteer.ElementHandle<Element>[]> =>
-  Task.fromPromise(() => state.page.$$(selector));
-  
-const findElement = (selector: string) => (state: AppState): Task<Maybe<puppeteer.ElementHandle<Element>>> =>
-  Task.fromPromise(() => state.page.$(selector))
-    .map(ele => Maybe.fromNullable(ele));
-
-const findNextButton = (state: AppState): Task<AppState> =>
-  findElement(state.bookOptions.nextPageSelector)(state)
-    .map(button => ({...state, nextPageButton: button}));
-
-const findAndHideUnnecessaryElements = (state: AppState): Task<AppState> =>
-  state.bookOptions.elementsToRemove.reduce(
-    (accumState, x) =>
-      accumState
-        .chain(findElements(x))
-        .chain(hideElements)
-        .chain(_x => accumState)
-        .chain(logProgress("Nav elements hidden")),
-    Task.resolve(state)
+/** `closeBrowser :: AppState -> Task (Either Error ())` */
+const closeBrowser = (state: AppState): TaskResult<void> =>
+  TaskResult.tryCatch(
+    () => state.browser.close(),
   );
 
-const findAndShowUnnecessaryElements = (state: AppState): Task<AppState> =>
-  state.bookOptions.elementsToRemove.reduce(
-    (accumState, x) =>
-      accumState
-        .chain(findElements(x))
-        .chain(showElements)
-        .chain(_x => accumState)
-        .chain(logProgress("Nav elements unhidden")),
-    Task.resolve(state)
+/** `mergeFile :: AppState -> Task (Either Error AppState)` */
+const mergeFile = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    TaskResult.of(state.pdfMerger.add("output/temp/temp.pdf")),
+    TaskResult.map(_x => state)
   );
 
-function buildPagePdf(state: AppState): Task<AppState> {
-  return findAndHideUnnecessaryElements(state)
-    .chain(createPdf)
-    .chain(logProgress("PDF file created"))
-    .chain(findAndShowUnnecessaryElements)
-    .chain(mergeFile)
-    .chain(logProgress("File merged"))
-    .chain(findNextButton)
-    .chain(logProgress("Next Button found"))
-    .chain(clickButton)
-}
-  
-function main(args: string[]): Task<void> {
-  return createBrowser()
-    .chain(logProgress("Browser created"))
-    .chain(browser =>
-      createPage(browser)
-        .chain(logProgress("Page created"))
-        .chain(createAppState(args[2] ?? "")(browser))
-        .chain(logProgress("AppState initialized"))
+/** `saveMergedFile :: AppState -> Task (Either Error AppState)` */
+const saveMergedFile = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    TaskResult.tryCatch(
+      () => state.pdfMerger.save(`output/books/${state.bookOptions.outputFilename}`),
+    ),
+    TaskResult.map(_x => state)
+  );
+
+/** `clickButton :: AppState -> Task (Either Error AppState)` */
+function clickButton(state: AppState): TaskResult<AppState> {
+  return pipe(
+    state.nextPageButton,
+    Maybe.fold(
+      () => pipe(
+        TaskResult.of(state),
+        logProgress("No further next button found"),
+      ),
+      button =>
+        pipe(
+          TaskResult.tryCatch(
+            () => Promise.all([button.click(), state.page.waitForNavigation()]),
+          ),
+          TaskResult.chain(_x => buildPagePdf(state))
+        )
     )
-    .chain(goToSite)
-    .chain(logProgress("Start page visited"))
-    .chain(buildPagePdf)
-    .chain(logProgress("Building of PDF finished"))
-    .chain(saveMergedFile)
-    .chain(logProgress("Merged PDF file saved"))
-    .chain(closeBrowser)
-    .chain(logProgress("Browser closed"));
+  );
 }
 
-(async () => {
-  try {
-    await Task.toPromise(main(process.argv));
-  } catch (e) {
-    console.warn(e);
-  }
-})();
+/** `reduceElements :: [ElementHandle Element] -> (ElementHandle Element -> (() -> Task (Either Error ()))) -> Task (Either Error ())` */
+const reduceElements =
+  (elements: puppeteer.ElementHandle<Element>[]) =>
+  (fn: (a: puppeteer.ElementHandle<Element>) => () => TaskResult<void>): TaskResult<void> =>
+    pipe(
+      elements,
+      aReduce(
+        TaskResult.tryCatch(async () => {}),
+        (accum, x) =>
+          pipe(
+            accum,
+            TaskResult.chain(fn(x))
+          ),
+      )
+    );
+
+/** `hideElements :: [ElementHandle Element] -> Task (Either Error ())` */
+const hideElements = (elements: puppeteer.ElementHandle<Element>[]): TaskResult<void> =>
+  reduceElements(elements)(x =>
+    () => TaskResult.tryCatch(async () => x.evaluate(el => {
+      el.style.display = "none";
+    }),
+  ));
+
+/** `showElements :: [ElementHandle Element] -> Task (Either Error ())` */
+const showElements = (elements: puppeteer.ElementHandle<Element>[]): TaskResult<void> =>
+  reduceElements(elements)(x =>
+    () => TaskResult.tryCatch(async () => x.evaluate(el => {
+      el.style.display = "block";
+    }),
+  ));
+
+/** `findElements :: String -> AppState -> Task (Either Error ([ElementHandle Element)])` */
+const findElements = (selector: string) => (state: AppState): TaskResult<puppeteer.ElementHandle<Element>[]> =>
+  TaskResult.tryCatch(async () => state.page.$$(selector));
+ 
+/** `findElement:: String -> AppState -> Task (Either Error (ElementHandle Element))` */ 
+const findElement = (selector: string) => (state: AppState): TaskResult<Maybe<puppeteer.ElementHandle<Element>>> =>
+  pipe(
+    TaskResult.tryCatch(() => state.page.$(selector)),
+    TaskResult.map(ele => Maybe.fromNullable(ele))
+  );
+
+/** `findNextButton :: AppState -> Task (Either Error AppState)` */
+const findNextButton = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    findElement(state.bookOptions.nextPageSelector)(state),
+    TaskResult.map(button => ({...state, nextPageButton: button}))
+  );
+
+/** `findAndHideUnnecessaryElements :: AppState -> Task (Either Error AppState)` */
+const findAndHideUnnecessaryElements = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    state.bookOptions.elementsToRemove as string[],
+    aReduce(
+      TaskResult.of(state),
+      (accumState, x) =>
+        pipe(
+          accumState,
+          TaskResult.chain(findElements(x)),
+          TaskResult.chain(hideElements),
+          TaskResult.chain(_x => accumState),
+          logProgress("Nav elements hidden"),
+        )
+    )
+  );
+
+/** `findAndShowUnnecessaryElements :: AppState -> Task (Either Error AppState)` */
+const findAndShowUnnecessaryElements = (state: AppState): TaskResult<AppState> =>
+  pipe(
+    state.bookOptions.elementsToRemove as string[],
+    aReduce(
+      TaskResult.of(state),
+      (accumState, x) =>
+        pipe(
+          accumState,
+          TaskResult.chain(findElements(x)),
+          TaskResult.chain(showElements),
+          TaskResult.chain(_x => accumState),
+          logProgress("Nav elements unhidden"),
+        )
+    )
+  );
+
+/** `buildPagePdf :: AppState -> Task (Either Error AppState)` */
+function buildPagePdf(state: AppState): TaskResult<AppState> {
+  return pipe(
+    findAndHideUnnecessaryElements(state),
+    TaskResult.chain(createPdf),
+    logProgress("PDF file created"),
+    TaskResult.chain(findAndShowUnnecessaryElements),
+    TaskResult.chain(mergeFile),
+    logProgress("File merged"),
+    TaskResult.chain(findNextButton),
+    logProgress("Next Button found"),
+    TaskResult.chain(clickButton),
+  );
+}
+ 
+/** `main :: [String] -> IO ()` */
+const main = (args: string[]): IO<void> => {
+  return pipe(
+    createBrowser,
+    logProgress("Browser created"),
+    TaskResult.chain(browser =>
+      pipe(
+        createPage(browser),
+        logProgress("Page created"),
+        TaskResult.chain(createAppState(args[2] ?? "")(browser)),
+        logProgress("AppState initialized")
+      )
+    ),
+    TaskResult.chain(goToSite),
+    logProgress("Start page visited"),
+    TaskResult.chain(buildPagePdf),
+    logProgress("Building of PDF finished"),
+    TaskResult.chain(saveMergedFile),
+    logProgress("Merged PDF file saved"),
+    TaskResult.chain(closeBrowser),
+    logProgress("Browser closed"),
+    x => (() => {
+      x().then(result => {
+        pipe(result, Result.fold(
+          e => {console.warn(e)},
+          () => {console.log("Program successfully ended")}
+        ))
+      })
+    })
+  );
+}
+
+main(process.argv)();
