@@ -26,11 +26,12 @@ const timestamp = (): IO<string> =>
   );
 
 /** `logProgress :: String -> a -> Task (Either Error a)` */
-const logProgress = (logString: string) => <T>(passThrough: T): T =>
+const logProgress = (logString: string) => <T>(passThrough: T): TaskResult<T> =>
   pipe(
     timestamp(),
     IO.map(date => {console.log(`${date} - ${logString}`)}),
-    _x => passThrough,
+    x => TaskResult.tryCatch(async () => x()),
+    TaskResult.map(_x => passThrough),
   );
 
 /** `createAppState :: String -> Browser -> Page -> Task (Either Error AppState)` */
@@ -119,7 +120,7 @@ function clickButton(state: AppState): TaskResult<AppState> {
     Maybe.fold(
       () => pipe(
         TaskResult.of(state),
-        logProgress("No further next button found"),
+        TaskResult.chain(logProgress("No further next button found")),
       ),
       button =>
         pipe(
@@ -194,7 +195,7 @@ const findAndHideUnnecessaryElements = (state: AppState): TaskResult<AppState> =
           TaskResult.chain(findElements(x)),
           TaskResult.chain(hideElements),
           TaskResult.chain(_x => accumState),
-          logProgress("Nav elements hidden"),
+          TaskResult.chain(logProgress("Nav elements hidden")),
         )
     )
   );
@@ -211,7 +212,7 @@ const findAndShowUnnecessaryElements = (state: AppState): TaskResult<AppState> =
           TaskResult.chain(findElements(x)),
           TaskResult.chain(showElements),
           TaskResult.chain(_x => accumState),
-          logProgress("Nav elements unhidden"),
+          TaskResult.chain(logProgress("Nav elements unhidden")),
         )
     )
   );
@@ -221,37 +222,37 @@ function buildPagePdf(state: AppState): TaskResult<AppState> {
   return pipe(
     findAndHideUnnecessaryElements(state),
     TaskResult.chain(createPdf),
-    logProgress("PDF file created"),
+    TaskResult.chain(logProgress("PDF file created")),
     TaskResult.chain(findAndShowUnnecessaryElements),
     TaskResult.chain(mergeFile),
-    logProgress("File merged"),
+    TaskResult.chain(logProgress("File merged")),
     TaskResult.chain(findNextButton),
-    logProgress("Next Button found"),
+    TaskResult.chain(logProgress("Next Button found")),
     TaskResult.chain(clickButton),
   );
 }
  
 /** `main :: [String] -> IO ()` */
-const main = (args: string[]): IO<void> => {
-  return pipe(
+const main = (args: string[]): IO<void> =>
+  pipe(
     createBrowser,
-    logProgress("Browser created"),
+    TaskResult.chain(logProgress("Browser created")),
     TaskResult.chain(browser =>
       pipe(
         createPage(browser),
-        logProgress("Page created"),
+        TaskResult.chain(logProgress("Page created")),
         TaskResult.chain(createAppState(args[2] ?? "")(browser)),
-        logProgress("AppState initialized")
+        TaskResult.chain(logProgress("AppState initialized")),
       )
     ),
     TaskResult.chain(goToSite),
-    logProgress("Start page visited"),
+    TaskResult.chain(logProgress("Start page visited")),
     TaskResult.chain(buildPagePdf),
-    logProgress("Building of PDF finished"),
+    TaskResult.chain(logProgress("Building of PDF finished")),
     TaskResult.chain(saveMergedFile),
-    logProgress("Merged PDF file saved"),
+    TaskResult.chain(logProgress("Merged PDF file saved")),
     TaskResult.chain(closeBrowser),
-    logProgress("Browser closed"),
+    TaskResult.chain(logProgress("Browser closed")),
     x => (() => {
       x().then(result => {
         pipe(result, Result.fold(
@@ -261,6 +262,5 @@ const main = (args: string[]): IO<void> => {
       })
     })
   );
-}
 
 main(process.argv)();
